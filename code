@@ -1,0 +1,409 @@
+#### libraries
+library('rlms')
+library('ggplot2')
+library('gridExtra')
+library('NMOF') # gridSearch
+library('foreign') # read .sav
+library('plotly')
+library('dplyr')
+
+#### get data
+
+rlms_fuzzy <- rlms_read("r25h_os26c.sav")
+gks_crisp <- rlms_read("gks_2015_3rd_quar.sav")
+gks_crisp_vec <- gks_crisp$doxodsn/3
+rlms_fuzzy_vec <- rlms_fuzzy$tf14
+rlms_fuzzy_vec <- na.omit(rlms_fuzzy_vec)
+sum(is.na(rlms_fuzzy_vec))
+sum(is.na(gks_crisp_vec))
+
+
+#### visualize the data
+p_fuzzy <- ggplot(data = as.data.frame(rlms_fuzzy_vec), aes(x = rlms_fuzzy_vec) ) + 
+  geom_histogram(bins = 200) + labs(title = 'Distibution of fuzzy income', x = 'income')+
+  xlim(0,400000)
+
+p_crisp <- ggplot(data = as.data.frame(gks_crisp_vec), aes(x = gks_crisp_vec)) + 
+  geom_histogram(bins = 200) + labs(title = 'Distibution of crisp income', x = 'income')+
+  xlim(0,400000)
+
+grid.arrange(p_fuzzy, p_crisp, nrow = 1)
+mean(log(rlms_fuzzy_vec[rlms_fuzzy_vec != 0]))
+mean(log(gks_crisp_vec))
+#### barplots
+barplot(table(gks_crisp_vec), main = 'Frequncy diagramms of crisp data',
+        xlab = 'income', ylab = 'count' )
+barplot(table(rlms_fuzzy_vec), main = 'Frequncy diagramms of fuzzy data',
+        xlab = 'income', ylab = 'count' )
+
+
+#### present each obserbation as follows: observation = p*10^2, where p - integer number is not divided by zero
+decomposition <- function(vec){
+  
+  df <- data.frame(q = double(), p = integer(), ten_to_power_p = double(), 
+                   original_num = double())
+  
+  for(x in vec){
+    if(x == 0) next
+    else{
+      p <- 0
+      temp <- x
+      while(temp %% 10 == 0) {
+        p <- p + 1
+        temp = temp/10
+      }
+      q = x / 10^p
+      df <- rbind(df, list(q,p,10^p,q*10^p))
+    }
+  }
+  colnames(df) <- c('q','p','10^p','q*10^p')
+  return(df)
+  
+}
+
+df_fuzzy <- decomposition(rlms_fuzzy_vec)
+df_crisp <- decomposition(gks_crisp_vec)
+
+
+#### generate random samples from both gks_crisp_vec and rlms_fuzzy_vec
+rand_crisp <- sample(df_crisp$`q*10^p`, 1000)
+rand_fuzzy <- sample(df_fuzzy$`q*10^p`, 1000)
+
+p_rand_crisp <- ggplot(as.data.frame(rand_crisp), aes(log(rand_crisp))) + 
+  geom_histogram(bins = 30, colour = 'black', fill = 'red')
+
+p_rand_fuzzy <- ggplot(as.data.frame(rand_fuzzy), aes(log(rand_fuzzy))) + 
+  geom_histogram(bins = 30, colour = 'black', fill = 'blue')
+
+grid.arrange(p_rand_crisp, p_rand_fuzzy)
+
+
+
+#### get frequency of fuzzy data for each bins  
+get_df_freq_fuzzy_for_hist <- function(df_fuzzy, q, q5, num_of_bins = 30){
+  
+  df_fuzzy <- df_fuzzy[order(df_fuzzy$`q*10^p`),]
+  fuzzy_log_vec <- log(df_fuzzy$`q*10^p`)
+  
+  bin <- (max(fuzzy_log_vec) - min(fuzzy_log_vec)) / num_of_bins
+  start_bin <- min(fuzzy_log_vec)
+  
+  freq <- rep(0, num_of_bins)
+  k <- 1
+  while(start_bin < max(fuzzy_log_vec)){
+    
+    for(i in 1:length(fuzzy_log_vec)){
+      if(df_fuzzy$q[i] %% 5 == 0){
+        freq[k] <- freq[k] + pnorm(start_bin + bin, 
+                                   mean = fuzzy_log_vec[i], 
+                                   sd = 1.2*q5*log(df_fuzzy$`10^p`[i])) -
+                             pnorm(start_bin, 
+                                   mean = fuzzy_log_vec[i], 
+                                   sd = 1.2*q5*log(df_fuzzy$`10^p`[i]))
+      }
+      else{
+        freq[k] <- freq[k] + pnorm(start_bin + bin, 
+                                   mean = fuzzy_log_vec[i], 
+                                   sd = q*log(df_fuzzy$`10^p`[i])) -
+                             pnorm(start_bin, 
+                                   mean = fuzzy_log_vec[i], 
+                                   sd = q*log(df_fuzzy$`10^p`[i]))
+      }
+    }
+    start_bin <- start_bin + bin
+    k <- k + 1
+  }
+
+  freq[num_of_bins + 1] <- NA
+  breaks <- seq(min(fuzzy_log_vec), max(fuzzy_log_vec), by = bin)
+  df <- data.frame(freq, breaks)
+  
+  return(df)
+}
+
+
+
+#### get frequency of crisp data for each bins  
+get_df_freq_crisp <- function(vec_crisp){
+  log_vec_crisp <- sort(log(vec_crisp))
+  bin <- (max(log_vec_crisp) - min(log_vec_crisp)) / 30
+  
+  freq <- rep(0, 30)
+  freq[1] <- 1
+  freq[30] <- 1
+  for(x in log_vec_crisp[2:(length(log_vec_crisp)-1)]){
+    temp <- x
+    k <- 0
+    while(temp > min(log_vec_crisp)){
+      temp <-  temp - bin
+      k <- k + 1
+    }
+    if(temp == min(log_vec_crisp)){
+      freq[k] <- freq[k] + 1/2
+      freq[k+1] <- freq[k+1] + 1/2
+    }
+    else freq[k] <- freq[k] + 1
+  }
+  
+  freq[31] <- NA
+  breaks <- seq(min(log_vec_crisp), max(log_vec_crisp), by = bin)
+  df <- data.frame(freq, breaks)
+  
+  return(df)
+}
+
+df_freq_crisp <- get_df_freq_crisp(rand_crisp)
+
+
+#### group data
+df_freq_crisp$freq[4] <- df_freq_crisp$freq[4] + sum(df_freq_crisp$freq[1:3])
+df_freq_crisp$freq[1:3] <- NA
+df_freq_crisp$freq[25] <- df_freq_crisp$freq[25] + sum(df_freq_crisp$freq[26:30])
+df_freq_crisp$freq[26:30] <- Na
+
+ggplot(data = df_freq_crisp, aes(x = breaks, y = freq)) + 
+  geom_col(colour = 'black', fill = 'red') 
+
+group_fuzzy_data <- function(df_fuzzy, num_bin_start, num_bin_end, num_of_bin = 30){
+  
+  df_fuzzy <- df_fuzzy[order(df_fuzzy$`q*10^p`),]
+  log_vec_fuzzy <- log(df_fuzzy$`q*10^p`)
+  bin <- (max(log_vec_fuzzy) - min(log_vec_fuzzy)) / num_of_bin
+  df_fuzzy$`q*10^p` <- log_vec_fuzzy
+  
+  for(i in 1:length(log_vec_fuzzy[log_vec_fuzzy < min(log_vec_fuzzy) + bin*(num_bin_start - 1)])){
+    df_fuzzy$`q*10^p`[i] <- (min(log_vec_fuzzy) + bin*num_bin_start + 
+                                 min(log_vec_fuzzy) + bin*(num_bin_start - 1)) / 2
+  }
+  len <- length(log_vec_fuzzy[log_vec_fuzzy > min(log_vec_fuzzy) + bin*(num_bin_end + 1)])
+  for(i in (length(log_vec_fuzzy) - len + 1):length(log_vec_fuzzy)){
+    df_fuzzy$`q*10^p`[i] <- (min(log_vec_fuzzy) + bin*num_bin_end + 
+                                 min(log_vec_fuzzy) + bin*(num_bin_end + 1)) / 2
+  }
+  
+  df_fuzzy$`q*10^p` <- exp(df_fuzzy$`q*10^p`)
+  
+  return(df_fuzzy)
+}
+
+df_rand_fuzzy <- decomposition(rand_fuzzy)
+df_rand_fuzzy <- group_fuzzy_data(df_rand_fuzzy, 4, 24, num_of_bin = 30)
+
+
+grid.arrange(ggplot(as.data.frame(rand_fuzzy), aes(log(rand_fuzzy))) + 
+               geom_histogram(bins = 30, colour = 'black', fill = 'red'), 
+             ggplot(df_rand_fuzzy, aes(log(df_rand_fuzzy$`q*10^p`))) + 
+               geom_histogram(bins = 30, colour = 'black', fill = 'blue'))
+
+
+#### Smirnov test
+smirnov_stat <- function(df_freq_crisp, df_freq_fuzzy){
+  statistics <- 0
+  for(i in 4:25){
+    statistics <- statistics + (df_freq_crisp$freq[i] - df_freq_fuzzy$freq[i])^2 / 
+      (df_freq_crisp$freq[i] + df_freq_fuzzy$freq[i])
+    
+  }
+  return(statistics)
+}
+
+Smirnov_gridSearch <- function(sequence_q, sequence_q5, df_fuzzy, df_freq_crisp){
+  
+  df_new <- data.frame(stat = double(), q = double(), q5 = double())
+  
+  for(x in sequence_q){
+    for(y in sequence_q5){
+      
+      df_freq_fuzzy <- get_df_freq_fuzzy_for_hist(df_fuzzy, q = x, q5 = y)
+      stat <- smirnov_stat(df_freq_crisp, df_freq_fuzzy)
+      df_new <- rbind(df_new, list(stat, x, y))
+      
+    }
+  }
+  colnames(df_new) <- c('stat','q','q5')
+  return(df_new)
+}
+
+df_sm <- Smirnov_gridSearch(seq(0, 0.05, by = 0.01), seq(0, 0.05, by = 0.01), df_rand_fuzzy, df_freq_crisp)
+
+
+ggplot(data = df_freq_crisp, aes(x = breaks, y = freq)) + 
+       geom_col(colour = 'black', fill = 'red', alpha = 0.5) + 
+       geom_col(aes(x = df_freq_fuzzy$breaks, y = df_freq_fuzzy$freq), colour = 'black', alpha = 0.6) 
+
+
+df_sm <- rename(.data = df_sm, Smirnov_statistics = stat)
+df_sm$q <- exp(df_sm$q)
+df_sm$q5 <- exp(df_sm$q5)
+
+plot_ly(data = df_sm, x = ~q, y = ~q5, z = ~Smirnov_statistics, type = 'heatmap')
+plot_ly(x = ~df_sm$q, y = ~df_sm$q5, z = ~df_sm$stat, type = 'heatmap')
+
+
+
+#################### comparing desired income to theoretical distribution ####################
+
+
+gks_desired <- read.spss("gks_2014_year_desired_income.sav", to.data.frame = TRUE, reencode = 'utf-8')
+rand_desired <- sample(gks_desired$OCHXOR, 1000)
+rand_desired <- rand_desired[rand_desired > 0]
+
+ggplot(as.data.frame(rand_desired), aes(log(rand_desired))) + 
+  geom_histogram(bins = 20, colour = 'black', fill = 'red')
+
+df_rand_desired <- decomposition(rand_desired)
+df_rand_desired <- group_fuzzy_data(df_rand_desired, 4, 18, num_of_bin = 20)
+
+chi_square_stat <- function(df_rand_desired){
+  
+  len <- length(df_freq_fuzzy$freq) - 1
+  interval_centers <- c()
+  for(i in 1:len)
+    interval_centers <- c(interval_centers, (df_freq_fuzzy$breaks[i] + df_freq_fuzzy$breaks[i+1])/2)
+  
+  sum <- 0
+  for(i in 1:len)
+    sum <- sum + df_freq_fuzzy$freq[i]*interval_centers[i]
+  
+  weighted_mean <- sum / 1000
+  
+  sum <- 0
+  for(i in 1:len)
+    sum <- sum + df_freq_fuzzy$freq[i]*(interval_centers[i] - weighted_mean)^2
+  
+  varience <- sum / (1000 - 1)
+
+  pnorm_vec <- c()
+  for(i in 1:len){
+    
+    temp <- pnorm((df_freq_fuzzy$breaks[i+1] - weighted_mean)/sqrt(varience)) - 
+            pnorm((df_freq_fuzzy$breaks[i] - weighted_mean)/sqrt(varience))
+    pnorm_vec <- c(pnorm_vec, temp)
+    
+  }
+  
+  chi_stat <- 0
+  for(i in 1:len)
+    chi_stat <- chi_stat + (df_freq_fuzzy$freq[i] - 1000*(pnorm_vec[i]))^2 / (1000*pnorm_vec[i])
+    
+  
+  return(chi_stat)
+
+}
+
+
+Chi_square_gridSearch <- function(sequence_q, sequence_q5, df){
+
+  df_new <- data.frame(stat = double(), q = double(), q5 = double())
+  
+  for(x in sequence_q){
+    for(y in sequence_q5){
+
+      df_freq <- get_df_freq_fuzzy_for_hist(df, q = x, q5 = y, num_of_bins = 20)
+      stat <- chi_square_stat(df_freq)
+      df_new <- rbind(df_new, list(stat, x, y))
+      
+    }
+  }
+  colnames(df_new) <- c('stat','q','q5')
+  return(df_new)
+}
+
+df_chi_all <- Chi_square_gridSearch(seq(0, 0.05, by = 0.01), seq(0, 0.05, by = 0.01), df_rand_desired)
+
+
+df_chi_all <- rename(.data = df_chi_all, Chi_square_stat = stat)
+df_chi_all$q <- exp(df_chi_all$q)
+df_chi_all$q5 <- exp(df_chi_all$q5)
+
+plot_ly(data = df_chi_all, x = ~q, y = ~q5, z = ~Chi_square_stat, type = 'heatmap')
+plot_ly(x = ~df_chi_all$q, y = ~df_chi_all$q5, z = ~df_chi_all$stat, type = 'scatter3d')
+plot_ly(x = ~df_chi_all$q, y = ~df_chi_all$q5, z = ~df_chi_all$stat, type = 'mesh3d')
+
+
+#### for 1) rural area
+
+mean(gks_desired$OCHXOR[gks_desired$MEST == 'сельский'])
+mean(gks_desired$OCHXOR[gks_desired$MEST == 'городской'])
+
+rand_desired_rural <- sample(gks_desired$OCHXOR[gks_desired$MEST == 'сельский'], 1000)
+rand_desired_rural <- rand_desired_rural[rand_desired_rural > 0]
+
+ggplot(as.data.frame(rand_desired_rural), aes(log(rand_desired_rural))) + 
+  geom_histogram(bins = 20, colour = 'black', fill = 'red')
+
+df_rand_desired_rural <- decomposition(rand_desired)
+df_rand_desired_rural <- group_fuzzy_data(df_rand_desired, 4, 18, num_of_bin = 20)
+
+ggplot(df_rand_desired_rural, aes(log(df_rand_desired_rural$`q*10^p`))) + 
+  geom_histogram(bins = 20, colour = 'black', fill = 'red')
+
+df_chi_rural <- Chi_square_gridSearch(seq(0, 0.1, by = 0.01), seq(0, 0.1, by = 0.01), df_rand_desired_rural)
+
+plot_ly(x = ~df_chi_rural$q, y = ~df_chi_rural$q5, z = ~df_chi_rural$stat, type = 'heatmap')
+
+#### for 2) urban area
+
+rand_desired_urban <- sample(gks_desired$OCHXOR[gks_desired$MEST == 'городской'], 1000)
+rand_desired_urban <- rand_desired_urban[rand_desired_urban > 0]
+
+ggplot(as.data.frame(rand_desired_urban), aes(log(rand_desired_urban))) + 
+  geom_histogram(bins = 20, colour = 'black', fill = 'red')
+
+df_rand_desired_urban <- decomposition(rand_desired_urban)
+df_rand_desired_urban <- group_fuzzy_data(df_rand_desired, 10, 16, num_of_bin = 20)
+
+ggplot(df_rand_desired_urban, aes(log(df_rand_desired_urban$`q*10^p`))) + 
+  geom_histogram(bins = 20, colour = 'black', fill = 'red')
+
+df_chi_urban <- Chi_square_gridSearch(seq(0.2, 0.4, by = 0.01), seq(0.2, 0.4, by = 0.01), df_rand_desired_urban)
+
+plot_ly(x = ~df_chi_urban$q, y = ~df_chi_urban$q5, z = ~df_chi_urban$stat, type = 'heatmap')
+
+
+
+#################### comparing descriptive statistics based on both crisp and fuzzy data  ####################
+
+varience_between <- var(rand_fuzzy) # crisp = intergroup varience
+sd_between <- sd(rand_fuzzy)
+
+
+varience.within <- function(vec_fuzzy){
+  
+  df_fuzzy <- decomposition(vec_fuzzy)
+  var_within <- 0
+  
+  for(x in df_fuzzy$`10^p`)
+    var_within <- var_within + x^2
+    
+  return(var_within/length(df_fuzzy$`10^p`))
+  
+}
+
+sd.within <- function(vec_fuzzy){
+  
+  df_fuzzy <- decomposition(vec_fuzzy)
+  sd_within <- 0
+  
+  for(x in df_fuzzy$`10^p`)
+    sd_within <- sd_within + x
+  
+  return(sd_within/length(df_fuzzy$`10^p`))
+  
+}
+
+
+varience_within <- varience.within(rand_fuzzy)
+sd_within <- sd.within(rand_fuzzy)
+
+varience_overall <- varience_between + varience_within
+sd_overall <- sd_between + sd_within
+
+
+sd.ratio_of_within_to_overall <- sd_within / sd_overall
+var.ratio_of_within_to_overall <- varience_within / varience_overall
+
+
+var.ratio_for_desired <- varience.within(rand_desired) / (var(rand_desired) + varience.within(rand_desired))
+sd.ratio_for_desired <- sd.within(rand_desired) / (sd(rand_desired) + sd.within(rand_desired))
+
